@@ -13,7 +13,7 @@
 
 -export([all/0, all/1, lightning/0, lightning/1]).
 
--include("src/couchdb/couch_db.hrl").
+-include("../couchdb/couch_db.hrl").
 
 -define(ADMIN_USER_CTX, {user_ctx, #user_ctx{roles=[<<"_admin">>]}}).
 
@@ -32,6 +32,7 @@ all(DbName) ->
     should_get_db_info(DbName),
     should_save_and_open_doc(DbName),
     should_stream_attachment(DbName),
+    should_stream_attachment_in(DbName),
     should_query_views(DbName),
     should_error_on_missing_doc(DbName),
     should_save_bulk_docs(DbName),
@@ -132,6 +133,22 @@ should_stream_attachment(DbName) ->
     ]},
     {ok, {Resp}} = hovercraft:save_doc(DbName, Doc),
     DocId = proplists:get_value(id, Resp),
+    % stream attachment
+    {ok, Pid} = hovercraft:start_attachment(DbName, DocId, AName),
+    {ok, Attachment} = get_full_attachment(Pid, []),
+    ABytes = Attachment,
+    ok.
+
+should_stream_attachment_in(DbName) ->
+    % setup
+    AName = <<"test2.txt">>,
+    ABytes = list_to_binary(string:chars($a, 10*1024, "")),
+    Doc = {[{<<"foo">>, <<"bar">>}]},
+    {ok, {Resp}} = hovercraft:save_doc(DbName, Doc),
+    DocId = proplists:get_value(id, Resp),
+    % stream in attachment
+    hovercraft:save_attachment(DbName, DocId, AName, 
+                               fun() -> ABytes end, byte_size(ABytes)),
     % stream attachment
     {ok, Pid} = hovercraft:start_attachment(DbName, DocId, AName),
     {ok, Attachment} = get_full_attachment(Pid, []),

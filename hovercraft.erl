@@ -23,6 +23,9 @@
     delete_doc/2,
     start_attachment/3,
     next_attachment_bytes/1,
+    save_attachment/5,
+    save_attachment/6,
+    save_attachment/7,
     query_view/3,
     query_view/4,
     query_view/5
@@ -32,7 +35,7 @@
 % It calls into CouchDB's database access functions, so it needs access
 % to the disk. To hook it up, make sure hovercraft is in the Erlang load 
 % path and ensure that the following line points to CouchDB's hrl file.
--include_lib("src/couchdb/couch_db.hrl").
+-include_lib("../couchdb/couch_db.hrl").
 
 -define(ADMIN_USER_CTX, {user_ctx, #user_ctx{roles=[<<"_admin">>]}}).
 
@@ -131,6 +134,34 @@ save_bulk(DbName, Docs) ->
 delete_doc(DbName, {DocProps}) ->
     save_doc(DbName, {[{<<"_deleted">>, true}|DocProps]}).
 
+
+%%--------------------------------------------------------------------
+%% Function: save_attachment(DbName, DocId, AName, DataFun, ContentLength) -> 
+%%                                               {ok, Rev} | {error,Error}
+%% Function: save_attachment(DbName, DocId, AName, DataFun, ContentLength, Encoding) -> 
+%%                                               {ok, Rev} | {error,Error}
+%% Function: save_attachment(DbName, DocId, AName, DataFun, ContentLength, 
+%%                           ContentType, Encoding) -> 
+%%                                               {ok, Rev} | {error,Error}
+%% Description: Streams an attachment to disk using a callback fun.
+%%   ContentType defaults to application/octet-stream if not passed. 
+%%   Encoding is identity or gzip.
+%%   DataFun is one of: a binary with all the data, 
+%%                      a fun/0 called repeatedly to get the data, 
+%%   ContentLength is one of: Integer content size
+%%                            undefined if unknown
+%%--------------------------------------------------------------------
+save_attachment(DbName, DocId, AName, Data, ContentLength) ->
+    save_attachment(DbName, DocId, AName, Data, ContentLength,
+                    <<"application/octet-stream">>, identity).
+
+save_attachment(DbName, DocId, AName, Data, ContentLength, Encoding) ->
+    save_attachment(DbName, DocId, AName, Data, ContentLength,
+                    <<"application/octet-stream">>, Encoding).
+
+save_attachment(DbName, DocId, AName, Data, ContentLength, ContentType, Encoding) ->
+    attachment_saver(DbName, DocId, AName, Data, ContentLength, 
+                     ContentType, Encoding).
 
 %%--------------------------------------------------------------------
 %% Function: start_attachment(DbName, DocId, AName) -> {ok, Pid} | {error,Error}
@@ -306,6 +337,27 @@ make_reduce_row_fold_fun(ViewFoldFun) ->
         {Go, NewAcc} = ViewFoldFun({Key, Value}, Acc),
         {Go, NewAcc}
     end.
+
+
+attachment_saver(DbName, DocId, AName, Data, ContentLength, ContentType, Encoding) ->
+    {ok, Db} = open_db(DbName),
+    NewAtt = [#att{ name = AName,
+                    type = ContentType,
+                    data = Data,
+                    att_len = ContentLength,
+                    md5 = <<>>,
+                    encoding = Encoding
+                  } ],
+    Doc = couch_httpd_db:couch_doc_open(Db, DocId, nil, []), 
+    #doc{atts=Atts, revs = {Pos, Revs}} = Doc,
+    DocEdited = Doc#doc{
+        % prune revision list as a workaround for key tree bug (COUCHDB-902)
+        revs = {Pos, case Revs of [] -> []; [Hd|_] -> [Hd] end},
+        atts = NewAtt ++ [A || A <- Atts, A#att.name /= AName]
+    },
+    {ok, UpdatedRev} = couch_db:update_doc(Db, DocEdited, []),
+    couch_db:close(Db),
+    {ok, UpdatedRev}.
 
 
 attachment_streamer(DbName, DocId, AName) ->
